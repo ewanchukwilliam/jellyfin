@@ -237,6 +237,28 @@ Consequently, compromise of the guest should have limited opportunity to establi
 
 Anything that must survive recreation belongs on explicitly designated persistent storage rather than the VM’s disposable root disk.
 
+Nightly Recreation
+
+Recreate only the VM, not the whole Terraform project:
+
+terraform apply -auto-approve -replace=proxmox_virtual_environment_vm.jellyfin
+
+Do not use terraform destroy for this. The project also manages the Proxmox firewall master switch (proxmox_virtual_environment_cluster_firewall), and destroying it can turn the Proxmox firewall off for every VM on the host.
+
+-replace clones a fresh VM from the template, and Ignition runs again on its first boot with the current contents of docker/. Media and Jellyfin config live on NFS and are unaffected.
+
+Starting Jellyfin
+
+Flatcar ships the docker binary but not the compose plugin. The docker-compose-sysext.service unit (terraform/jellyfinflatcar.tf) downloads Docker Compose from Flatcar's sysext-bakery on first boot, verifies it against a pinned SHA-256, and enables it as a system extension. The template is not modified.
+
+Jellyfin starts automatically on boot via the jellyfin.service unit in terraform/jellyfinflatcar.tf. On a fresh VM the first start includes pulling the image, so it can take several minutes. To check:
+
+ssh williamewanchuk@192.168.1.61
+systemctl status docker-compose-sysext jellyfin
+docker compose -f /opt/jellyfin/compose.yaml logs -f
+
+The unit waits for the NFS mount (RequiresMountsFor); without it, Docker would create an empty /mnt/jellyfin/config on the local disk and Jellyfin would start with no library. It also creates config/ and media/ on the share before starting: Docker's own auto-creation of missing mount folders tries to chown them, which the all_squash NFS export refuses.
+
 Image Caching
 
 Container images may be pre-pulled into the Flatcar Proxmox template to reduce recreation time.

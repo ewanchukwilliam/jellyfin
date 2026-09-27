@@ -1,0 +1,152 @@
+# Copied onto the VM at /opt/jellyfin/compose.yaml by Ignition (see terraform/jellyfinflatcar.tf) - edit here, then recreate the VM.
+services:
+  jellyfin:
+    # pinned by digest - `latest`/`12` move under you; bump deliberately:
+    #   curl -s 'https://hub.docker.com/v2/repositories/jellyfin/jellyfin/tags?name=12.' | jq -r '.results[] | "\(.name) \(.digest)"'
+    image: jellyfin/jellyfin:12.1.20260915-010956@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
+    user: "2000:2000" # non-root, and the same id the NFS export squashes everything to
+    ports:
+      - "8096:8096"
+    volumes:
+      - /mnt/jellyfin/config:/config    # persistent (NFS): users, library db, settings
+      - /var/lib/jellyfin/cache:/cache  # disposable (VM disk): transcodes, images - created 2000:2000 by Ignition
+      - /mnt/jellyfin/media:/media:ro   # Jellyfin only ever reads media
+    read_only: true # container filesystem can't be modified - only the mounts above and /tmp are writable
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL] # 8096 is unprivileged, nothing here needs capabilities
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    pids_limit: 512
+    restart: unless-stopped
+  inspection:
+    # on-demand scanner, not started by `up`: `sudo /opt/jellyfin/inspect.sh` opens a shell in it (e.g. clamscan -r /media)
+    profiles: [tools]
+    build:
+      context: .
+      dockerfile: Dockerfile.inspection
+    user: "2000:2000"
+    network_mode: none # signatures are baked in at build time - rebuild the image to refresh them
+    volumes:
+      - /mnt/jellyfin/media:/media:ro # media only - no access to Jellyfin's config/db or cache
+    read_only: true
+    tmpfs:
+      - /tmp # clamscan/ffmpeg scratch space
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g # clamav loads ~1-1.5GB of signatures
+    pids_limit: 128
+    restart: "no"
+
+  # --- Requests & downloads: Seerr -> Radarr/Sonarr -> Prowlarr (indexers) + qBittorrent -> media/movies, media/shows ---
+  # Layout on the NFS share (dirs made by jellyfin.service's ExecStartPre):
+  #   media/movies, media/shows   - libraries, unchanged; Jellyfin still sees them read-only at /media
+  #   media/downloads             - qBittorrent's output; inside media/ so Radarr/Sonarr import by hardlink (instant, no extra space)
+  #                                 rather than copying across mounts. Not in any Jellyfin library, so half-finished downloads never show up.
+  #   appdata/<app>               - each app's settings; beside Jellyfin's config/, so no app can read another's (API keys, user db)
+  # Radarr/Sonarr see media/ as /data, qBittorrent sees only media/downloads - also at /data/downloads, so paths match between them.
+  # Admin UIs bind to 127.0.0.1: reach them over SSH (ssh -L 7878:localhost:7878 ...). Only Seerr is LAN-facing.
+  # linuxserver images: non-root + read-only per docs.linuxserver.io/misc/non-root and /misc/read-only - s6 needs /run as a tmpfs owned by the user.
+  # All pinned by digest; bump deliberately:
+  #   curl -s 'https://hub.docker.com/v2/repositories/linuxserver/<app>/tags/latest' | jq -r '.name, .digest'
+
+  seerr:
+    # the request page (successor to Jellyseerr): search a title, click Request - it goes to Radarr/Sonarr. Talks to them by service name.
+    # bump: https://github.com/seerr-team/seerr/releases
+    image: ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1
+    init: true # node as PID 1 doesn't reap children or handle SIGTERM
+    # runs as the image's own non-root `node` user - the NFS export squashes its writes to 2000 regardless
+    ports:
+      - "5055:5055" # LAN clients, allowed in by the Proxmox firewall like 8096
+    volumes:
+      - /mnt/jellyfin/appdata/seerr:/app/config
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 256
+    restart: unless-stopped
+
+  radarr:
+    # movies: takes requests, finds releases via Prowlarr, hands them to qBittorrent, then renames into /data/movies/Title (Year)/
+    image: lscr.io/linuxserver/radarr:6.4.4@sha256:adb6c09d6b729ea5e642c99cea35af72702ef476bf4763f153299ac5db9f0b4f
+    user: "2000:2000"
+    ports:
+      - "127.0.0.1:7878:7878"
+    volumes:
+      - /mnt/jellyfin/appdata/radarr:/config
+      - /mnt/jellyfin/media:/data # root folder /data/movies, downloads at /data/downloads
+    read_only: true
+    tmpfs:
+      - /run:uid=2000,gid=2000,exec
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 256
+    restart: unless-stopped
+
+  sonarr:
+    # TV: same as Radarr, into /data/shows/Show/Season NN/
+    image: lscr.io/linuxserver/sonarr:4.0.20@sha256:f247545d23ba8b233d6604575347e48a623fe6ad75dda02348bf81917f3b5c06
+    user: "2000:2000"
+    ports:
+      - "127.0.0.1:8989:8989"
+    volumes:
+      - /mnt/jellyfin/appdata/sonarr:/config
+      - /mnt/jellyfin/media:/data # root folder /data/shows, downloads at /data/downloads
+    read_only: true
+    tmpfs:
+      - /run:uid=2000,gid=2000,exec
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 256
+    restart: unless-stopped
+
+  prowlarr:
+    # indexer manager: add search sites once here, it syncs them into Radarr and Sonarr. Needs no media access.
+    image: lscr.io/linuxserver/prowlarr:2.6.5@sha256:f2b26429893d4c4cb71941b7ee50b1bdecd9d5f9f9e02d5410615e9f4f7c8d95
+    user: "2000:2000"
+    ports:
+      - "127.0.0.1:9696:9696"
+    volumes:
+      - /mnt/jellyfin/appdata/prowlarr:/config
+    read_only: true
+    tmpfs:
+      - /run:uid=2000,gid=2000,exec
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
+    restart: unless-stopped
+
+  qbittorrent:
+    # download client - Radarr/Sonarr send it releases, it writes only to media/downloads. No inbound torrent port (the VM firewall drops
+    # inbound anyway): downloads work outbound-only, just with fewer peers. Set "Excluded file names" in its settings (*.exe, *.lnk, *.scr, ...).
+    image: lscr.io/linuxserver/qbittorrent:5.2.3@sha256:caab2ebce30799ab342c374ea268fef4ec063a8ec3733a4e5d4a8e856ee32ce8
+    user: "2000:2000"
+    environment:
+      - WEBUI_PORT=8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /mnt/jellyfin/appdata/qbittorrent:/config
+      - /mnt/jellyfin/media/downloads:/data/downloads
+    read_only: true
+    tmpfs:
+      - /run:uid=2000,gid=2000,exec
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 256
+    restart: unless-stopped

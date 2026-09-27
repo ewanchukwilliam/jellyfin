@@ -1,0 +1,5 @@
+# secrets and runtime state never go in git (see README: Persistent vs. Disposable State)
+.env
+**/.terraform/
+*.tfstate
+*.tfstate.*

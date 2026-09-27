@@ -1,0 +1,15 @@
+# pinned by digest, same reasoning as the Jellyfin image in compose.yaml; bump deliberately:
+#   curl -s https://hub.docker.com/v2/repositories/library/debian/tags/bookworm-slim | jq -r .digest
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        file \
+        clamav \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# no `|| true` - a failed signature download should fail the build, not ship a scanner with no signatures
+RUN freshclam
+
+ENTRYPOINT ["/bin/bash"]
