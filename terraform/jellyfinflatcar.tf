@@ -64,7 +64,7 @@ locals {
   nfs_dirs = [
     "config", # Jellyfin
     "media/movies", "media/shows", "media/downloads",
-    "appdata/seerr", "appdata/radarr", "appdata/sonarr", "appdata/prowlarr", "appdata/qbittorrent",
+    "appdata/seerr", "appdata/radarr", "appdata/sonarr", "appdata/prowlarr", "appdata/qbittorrent/qBittorrent",
   ]
 
   # systemd requires a mount unit's name to match its path: /mnt/jellyfin -> mnt-jellyfin.mount
@@ -331,6 +331,9 @@ locals {
             TimeoutStartSec=30min
             WorkingDirectory=/opt/jellyfin
             ExecStartPre=/usr/bin/mkdir -p ${join(" ", [for d in local.nfs_dirs : "${var.nfs_jellyfin_mount_point}/${d}"])}
+            # first boot only, never overwrites UI changes: seed qBittorrent's settings, see docker/qbittorrent.conf
+            # (not `cp -n` - some coreutils versions exit non-zero when it skips, which would fail the unit on every later boot)
+            ExecStartPre=/usr/bin/sh -c 'test -e "$$1" || cp /opt/jellyfin/qbittorrent.conf "$$1"' _ ${var.nfs_jellyfin_mount_point}/appdata/qbittorrent/qBittorrent/qBittorrent.conf
             ExecStart=/usr/bin/docker compose -f /opt/jellyfin/compose.yaml up -d --remove-orphans
             ExecStop=/usr/bin/docker compose -f /opt/jellyfin/compose.yaml down
 

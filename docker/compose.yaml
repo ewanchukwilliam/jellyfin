@@ -128,6 +128,25 @@ services:
     pids_limit: 256
     restart: unless-stopped
 
+  flaresolverr:
+    # headless Chrome that gets Prowlarr past Cloudflare "checking your browser" pages on some indexers. Prowlarr only:
+    # Settings -> Indexers -> + FlareSolverr, host http://flaresolverr:8191, then tag the indexers that need it.
+    # No published port - nothing outside the compose network should drive a browser on this VM.
+    # bump: https://github.com/FlareSolverr/FlareSolverr/releases
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.2@sha256:c80ae007ce2ccdcd217a12426e4f039ef763ff90738c808d38810c3e59323767
+    # runs as the image's own non-root `flaresolverr` user; not read_only - Chrome writes its profile under /app
+    environment:
+      - LOG_LEVEL=info
+    tmpfs:
+      - /tmp
+    shm_size: 512m # Chrome uses /dev/shm heavily; Docker's 64MB default makes it crash on bigger pages
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g # at 1g Chrome hit the limit mid-challenge ("tab crashed"), especially with Prowlarr retrying in parallel
+    pids_limit: 512 # Chrome is many processes
+    restart: unless-stopped
+
   qbittorrent:
     # download client - Radarr/Sonarr send it releases, it writes only to media/downloads. No inbound torrent port (the VM firewall drops
     # inbound anyway): downloads work outbound-only, just with fewer peers. Set "Excluded file names" in its settings (*.exe, *.lnk, *.scr, ...).
